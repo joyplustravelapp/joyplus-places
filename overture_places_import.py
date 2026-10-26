@@ -38,7 +38,7 @@ _opener.addheaders = [("User-Agent", "Mozilla/5.0 (compatible; joyplus-places/1.
 urllib.request.install_opener(_opener)
 
 # Bump when the filter changes, so files built with an older filter are rebuilt.
-FILTER_VERSION = "2"
+FILTER_VERSION = "3"
 
 # Set to False if the catalog is unreachable; reads then go straight to storage.
 USE_STAC = True
@@ -142,10 +142,23 @@ def to_row(record, point, city, country, release):
     }
 
 
+# Chains Overture doesn't always label as a brand, matched on the start of the name.
+CHAIN_NAMES = (
+    "starbucks", "mcdonald", "burger king", "kfc", "subway", "domino", "pizza hut",
+    "costa coffee", "dunkin", "tim hortons", "7-eleven", "7 eleven", "carrefour", "lidl",
+    "aldi", "pingo doce", "continente", "spar", "five guys", "taco bell", "telepizza",
+    "papa john", "krispy kreme", "pret a manger", "paul ", "hard rock cafe", "tgi friday",
+    "zara", "primark", "decathlon", "ikea", "family mart", "familymart", "lawson",
+)
+
+
 def is_chain(record):
     """Branded places (supermarket chains, fast-food chains) are skipped, except stays."""
     brand = record.get("brand") or {}
-    return bool((brand.get("names") or {}).get("primary") or brand.get("wikidata"))
+    if (brand.get("names") or {}).get("primary") or brand.get("wikidata"):
+        return True
+    name = ((record.get("names") or {}).get("primary") or "").lower().replace("’", "'")
+    return name.startswith(CHAIN_NAMES)
 
 
 def keep(record, min_confidence, min_confidence_sights=0.3):

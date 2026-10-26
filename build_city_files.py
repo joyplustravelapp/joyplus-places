@@ -26,6 +26,7 @@ from overture_places_import import (
     FILTER_VERSION, best_rows, bbox_from_centre, city_records, keep, latest_release, to_row,
 )
 from overturemaps import core
+from wikidata_famous import enrich, fetch_famous
 
 ATTRIBUTION = "© Overture Maps Foundation and contributors"
 
@@ -155,6 +156,7 @@ def main():
     parser.add_argument("--upload", action="store_true", help="upload to Cloudflare R2")
     parser.add_argument("--index-only", action="store_true", help="only write places/index.json")
     parser.add_argument("--force", action="store_true", help="rebuild cities already on this release")
+    parser.add_argument("--no-wikidata", action="store_true", help="skip the famous-places step")
     args = parser.parse_args()
 
     release = args.release or latest_release()
@@ -186,11 +188,21 @@ def main():
             print(f"{city['slug']}: FAILED ({error})")
             continue
         document = city_document(city, places, release)
+        fame_note = ""
+        if not args.no_wikidata:
+            famous = fetch_famous(city["lat"], city["lon"], city["radius_km"], city["country"])
+            document["places"], matched, added = enrich(document["places"], famous)
+            document["count"] = len(document["places"])
+            if added:
+                document["licenses"] = sorted(set(document["licenses"]) | {"CC0-1.0"})
+            document["famous_source"] = "Wikidata"
+            fame_note = f" · {len(famous)} famous ({matched} matched, {added} added)"
+            time.sleep(1)  # be gentle with Wikidata's free service
         write_local(os.path.join(args.out_dir, f"{city['slug']}.json"), document)
         if r2:
             r2.put_json(key, document, release)
         done += 1
-        print(f"{city['slug']}: {len(places):,} places")
+        print(f"{city['slug']}: {len(places):,} places{fame_note}")
 
     print(f"Done: {done} built, {skipped} already up to date, {len(failed)} failed")
     if failed:
