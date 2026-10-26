@@ -38,7 +38,7 @@ _opener.addheaders = [("User-Agent", "Mozilla/5.0 (compatible; joyplus-places/1.
 urllib.request.install_opener(_opener)
 
 # Bump when the filter changes, so files built with an older filter are rebuilt.
-FILTER_VERSION = "3"
+FILTER_VERSION = "4"
 
 # Set to False if the catalog is unreachable; reads then go straight to storage.
 USE_STAC = True

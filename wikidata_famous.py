@@ -102,9 +102,24 @@ STOP_WORDS = {
 }
 
 
+# Scripts written without spaces between words: compare pairs of characters instead.
+NO_SPACE_SCRIPTS = re.compile(r"[\u0e00-\u0e7f\u0e80-\u0eff\u1000-\u109f\u1780-\u17ff"
+                              r"\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\u1100-\u11ff]")
+
+
 def normalise(text):
-    text = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode().lower()
-    return [w for w in re.findall(r"[a-z0-9]+", text) if w not in STOP_WORDS]
+    """Words of a name in any script, without accents, case or filler words."""
+    text = unicodedata.normalize("NFKD", (text or "").casefold())
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    tokens = []
+    for word in re.findall(r"\w+", text):
+        if word in STOP_WORDS:
+            continue
+        if NO_SPACE_SCRIPTS.search(word) and len(word) > 1:
+            tokens.extend(word[i:i + 2] for i in range(len(word) - 1))
+        else:
+            tokens.append(word)
+    return tokens
 
 
 def similarity(a, b):
@@ -113,6 +128,12 @@ def similarity(a, b):
     if not wa or not wb:
         return 0.0
     return len(wa & wb) / len(wa | wb)
+
+
+def contained(a, b):
+    """True when every word of the shorter name appears in the longer one."""
+    wa, wb = set(normalise(a)), set(normalise(b))
+    return bool(wa and wb) and (wa <= wb or wb <= wa)
 
 
 def distance_m(lat1, lon1, lat2, lon2):
@@ -177,13 +198,17 @@ def enrich(places, famous):
         for i, place in enumerate(places):
             if i in used:
                 continue
-            if distance_m(item["lat"], item["lon"], place["lat"], place["lon"]) > 200:
+            metres = distance_m(item["lat"], item["lon"], place["lat"], place["lon"])
+            if metres > 200:
                 continue
-            score = max(similarity(item["name"], place["name"]),
-                        similarity(item.get("local") or "", place["name"]))
+            names = [item["name"], item.get("local") or ""]
+            score = max(similarity(n, place["name"]) for n in names)
+            # "外滩" inside "上海外滩", "Gorky Park" vs "Park": same place if very close
+            if score < 0.3 and metres <= 120 and any(contained(n, place["name"]) for n in names):
+                score = 0.3
             if score > best_score:
                 best, best_score = i, score
-        if best is not None and best_score >= 0.34:
+        if best is not None and best_score >= 0.3:
             used.add(best)
             places[best]["fame"] = item["fame"]
             places[best]["wd"] = item["wd"]
