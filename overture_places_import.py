@@ -37,23 +37,70 @@ _opener = urllib.request.build_opener()
 _opener.addheaders = [("User-Agent", "Mozilla/5.0 (compatible; joyplus-places/1.0; +https://joyplusapp.com)")]
 urllib.request.install_opener(_opener)
 
+# Bump when the filter changes, so files built with an older filter are rebuilt.
+FILTER_VERSION = "2"
+
 # Set to False if the catalog is unreachable; reads then go straight to storage.
 USE_STAC = True
 
-# A place is kept when one word of its basic_category matches one of these.
-# Matching whole words (split on "_") avoids false hits like "art" in "apartment".
-TRAVEL_WORDS = {
+# Places are grouped by the words in their basic_category (split on "_"), so
+# "art" never matches "apartment". Sights are what travellers come for, so they
+# get the most room in each city and a lower confidence bar.
+SIGHT_WORDS = {
     "museum", "gallery", "art", "arts", "landmark", "monument", "memorial", "historic",
-    "historical", "heritage", "castle", "palace", "fort", "ruins", "church", "cathedral",
-    "basilica", "temple", "mosque", "synagogue", "shrine", "monastery", "viewpoint",
-    "lookout", "scenic", "park", "garden", "botanical", "beach", "nature", "trail",
-    "hiking", "waterfall", "lake", "island", "zoo", "aquarium", "attraction", "tourist",
-    "tour", "tours", "market", "cafe", "coffee", "bakery", "eatery", "restaurant", "food",
-    "bistro", "bar", "pub", "brewery", "winery", "wine", "cocktail", "nightclub", "club",
-    "music", "theater", "theatre", "cinema", "concert", "festival", "accommodation",
-    "hostel", "hotel", "guesthouse", "lodging", "campground", "camping", "spa", "surf",
-    "diving", "plaza", "square", "bridge", "pier", "harbor", "harbour", "stadium",
+    "historical", "heritage", "castle", "palace", "fort", "fortress", "ruins", "church",
+    "cathedral", "basilica", "temple", "mosque", "synagogue", "shrine", "monastery",
+    "viewpoint", "lookout", "scenic", "observation", "tower", "fountain", "statue",
+    "sculpture", "park", "garden", "botanical", "beach", "nature", "trail", "hiking",
+    "waterfall", "lake", "island", "zoo", "aquarium", "attraction", "tourist", "plaza",
+    "square", "bridge", "pier", "harbor", "harbour", "stadium", "theater", "theatre",
+    "concert", "opera", "festival", "tour", "tours",
 }
+FOOD_WORDS = {
+    "market", "cafe", "coffee", "bakery", "eatery", "restaurant", "food", "bistro", "bar",
+    "pub", "brewery", "winery", "wine", "cocktail", "nightclub", "club", "tapas",
+}
+STAY_WORDS = {"accommodation", "hostel", "hotel", "guesthouse", "lodging", "campground", "camping"}
+OTHER_WORDS = {"spa", "surf", "diving", "cinema", "music", "books", "bookstore"}
+
+# Everyday places travellers don't plan a day around, even when another word matches
+# ("food_and_beverage_store" is a supermarket, "hardware_home_and_garden" a DIY shop).
+EXCLUDE_WORDS = {
+    "store", "supermarket", "grocery", "hardware", "convenience", "pharmacy", "drugstore",
+    "dealer", "dealership", "repair", "service", "services", "agency", "office", "bank",
+    "atm", "clinic", "hospital", "dentist", "doctor", "school", "gas", "fuel", "parking",
+    "laundry", "salon", "barber", "insurance", "lawyer", "accountant", "estate", "wholesale",
+    "warehouse", "factory", "utility", "electronics", "furniture", "appliance", "automotive",
+    "car", "motorcycle", "tire",
+}
+# Shops still worth a stop, despite "store" in the category.
+KEEP_ANYWAY_WORDS = {"books", "bookstore", "market", "antique", "vintage", "souvenir", "craft"}
+
+# Share of each city's places per group; leftover room goes to the best of the rest.
+GROUP_SHARE = {"sight": 0.45, "food": 0.40, "stay": 0.05, "other": 0.10}
+
+
+def category_group(basic_category):
+    """'sight', 'food', 'stay', 'other', or None when it isn't a travel place."""
+    if not basic_category:
+        return None
+    words = set(basic_category.lower().split("_"))
+    if words & EXCLUDE_WORDS and not words & KEEP_ANYWAY_WORDS:
+        return None
+    if words & SIGHT_WORDS:
+        return "sight"
+    if words & FOOD_WORDS:
+        return "food"
+    if words & STAY_WORDS:
+        return "stay"
+    if words & (OTHER_WORDS | KEEP_ANYWAY_WORDS):
+        return "other"
+    return None
+
+
+def is_travel_place(basic_category):
+    return category_group(basic_category) is not None
+
 
 CSV_COLUMNS = [
     "overture_id", "name", "basic_category", "city", "country", "address", "website",
@@ -95,14 +142,24 @@ def to_row(record, point, city, country, release):
     }
 
 
-def keep(record, min_confidence):
-    """Travel category, named, confident enough, and not marked closed."""
+def is_chain(record):
+    """Branded places (supermarket chains, fast-food chains) are skipped, except stays."""
+    brand = record.get("brand") or {}
+    return bool((brand.get("names") or {}).get("primary") or brand.get("wikidata"))
+
+
+def keep(record, min_confidence, min_confidence_sights=0.3):
+    """Travel category, named, not a chain, confident enough, and not marked closed."""
     if not (record.get("names") or {}).get("primary"):
         return False
-    if not is_travel_place(record.get("basic_category")):
+    group = category_group(record.get("basic_category"))
+    if group is None:
+        return False
+    if group != "stay" and is_chain(record):
         return False
     confidence = record.get("confidence")
-    if confidence is None or confidence < min_confidence:
+    floor = min_confidence_sights if group == "sight" else min_confidence
+    if confidence is None or confidence < floor:
         return False
     return record.get("operating_status") in (None, "open")
 
@@ -125,16 +182,28 @@ def read_cities(path):
 
 
 def best_rows(rows, max_per_category, max_per_city):
-    """Keep the most confident places, balanced so no category crowds out the rest."""
+    """The most confident places, with sights guaranteed the most room in each city."""
     by_category = defaultdict(list)
     for row in rows:
         by_category[row["basic_category"]].append(row)
     capped = []
-    for group in by_category.values():
-        group.sort(key=lambda r: r["confidence"] or 0, reverse=True)
-        capped.extend(group[:max_per_category])
-    capped.sort(key=lambda r: r["confidence"] or 0, reverse=True)
-    return capped[:max_per_city]
+    for same in by_category.values():
+        same.sort(key=lambda r: r["confidence"] or 0, reverse=True)
+        capped.extend(same[:max_per_category])
+
+    by_group = defaultdict(list)
+    for row in capped:
+        by_group[category_group(row["basic_category"])].append(row)
+    chosen, leftover = [], []
+    for group, rows_in_group in by_group.items():
+        rows_in_group.sort(key=lambda r: r["confidence"] or 0, reverse=True)
+        room = int(max_per_city * GROUP_SHARE.get(group, 0))
+        chosen.extend(rows_in_group[:room])
+        leftover.extend(rows_in_group[room:])
+    leftover.sort(key=lambda r: r["confidence"] or 0, reverse=True)
+    chosen.extend(leftover[: max(0, max_per_city - len(chosen))])
+    chosen.sort(key=lambda r: r["confidence"] or 0, reverse=True)
+    return chosen[:max_per_city]
 
 
 def done_cities(path):

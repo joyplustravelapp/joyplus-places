@@ -23,7 +23,7 @@ import time
 from datetime import datetime, timezone
 
 from overture_places_import import (
-    best_rows, bbox_from_centre, city_records, keep, latest_release, to_row,
+    FILTER_VERSION, best_rows, bbox_from_centre, city_records, keep, latest_release, to_row,
 )
 from overturemaps import core
 
@@ -73,6 +73,7 @@ def city_document(city, places, release):
         "radius_km": city["radius_km"],
         "release": release,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "filter_version": FILTER_VERSION,
         "attribution": ATTRIBUTION,
         "licenses": licenses,
         "count": len(places),
@@ -105,11 +106,13 @@ class R2:
             region_name="auto",
         )
 
-    def release_of(self, key):
+    def built_with(self, key):
+        """(release, filter version) a file was built with, or (None, None)."""
         try:
-            return self.client.head_object(Bucket=self.bucket, Key=key)["Metadata"].get("release")
+            meta = self.client.head_object(Bucket=self.bucket, Key=key)["Metadata"]
+            return meta.get("release"), meta.get("filter")
         except Exception:
-            return None
+            return None, None
 
     def put_json(self, key, document, release):
         self.client.put_object(
@@ -118,7 +121,7 @@ class R2:
             Body=json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
             ContentType="application/json; charset=utf-8",
             CacheControl="public, max-age=86400",
-            Metadata={"release": release},
+            Metadata={"release": release, "filter": FILTER_VERSION},
         )
 
 
@@ -173,7 +176,7 @@ def main():
         if i % args.shards != args.shard:
             continue
         key = f"places/{city['slug']}.json"
-        if r2 and not args.force and r2.release_of(key) == release:
+        if r2 and not args.force and r2.built_with(key) == (release, FILTER_VERSION):
             skipped += 1
             continue
         try:
