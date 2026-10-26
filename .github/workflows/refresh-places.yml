@@ -1,0 +1,50 @@
+name: Refresh city places
+
+on:
+  schedule:
+    - cron: "0 3 28 * *"   # 28th of every month, after Overture's monthly release
+  workflow_dispatch:         # "Run workflow" button for a manual run
+    inputs:
+      top_cities:
+        description: "How many of the world's largest cities to include"
+        default: "1000"
+
+env:
+  TOP_CITIES: ${{ github.event.inputs.top_cities || '1000' }}
+
+jobs:
+  citylist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The largest cities from GeoNames, plus every row you keep in cities.csv
+      - run: python build_city_list.py --top "$TOP_CITIES" --keep cities.csv --out cities_all.csv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cities
+          path: cities_all.csv
+
+  cities:
+    needs: citylist
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cities
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install overturemaps boto3
+      - run: python build_city_files.py --cities cities_all.csv --shard ${{ matrix.shard }} --shards 10 --upload
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{
