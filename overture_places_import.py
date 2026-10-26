@@ -25,8 +25,20 @@ import os
 import sys
 from collections import Counter, defaultdict
 
+import urllib.request
+
+import pyarrow.fs as pafs
 import shapely
 from overturemaps import core
+
+# Overture's catalog server rejects Python's default identity ("403 Forbidden"),
+# so every request introduces itself like a normal client.
+_opener = urllib.request.build_opener()
+_opener.addheaders = [("User-Agent", "Mozilla/5.0 (compatible; joyplus-places/1.0; +https://joyplusapp.com)")]
+urllib.request.install_opener(_opener)
+
+# Set to False if the catalog is unreachable; reads then go straight to storage.
+USE_STAC = True
 
 # A place is kept when one word of its basic_category matches one of these.
 # Matching whole words (split on "_") avoids false hits like "art" in "apartment".
@@ -133,9 +145,37 @@ def done_cities(path):
         return {row["city"] for row in csv.DictReader(f)}
 
 
+def latest_release():
+    """Latest Overture release, from the catalog or, if it refuses, from public storage."""
+    global USE_STAC
+    try:
+        return core.get_latest_release()
+    except Exception as error:
+        print(f"Catalog unavailable ({error}). Reading the release list from storage instead.")
+        USE_STAC = False
+        s3 = pafs.S3FileSystem(anonymous=True, region="us-west-2")
+        entries = s3.get_file_info(pafs.FileSelector("overturemaps-us-west-2/release/"))
+        releases = sorted(e.base_name for e in entries if e.type == pafs.FileType.Directory)
+        if not releases:
+            raise RuntimeError("No Overture releases found in storage") from error
+        return releases[-1]
+
+
+def open_reader(bbox, release):
+    """Use the catalog to read only the files that cover the bbox; fall back to scanning storage."""
+    global USE_STAC
+    if USE_STAC:
+        try:
+            return core.record_batch_reader("place", bbox=bbox, release=release, stac=True)
+        except Exception as error:
+            print(f"Catalog lookup failed ({error}). Scanning storage directly from now on.")
+            USE_STAC = False
+    return core.record_batch_reader("place", bbox=bbox, release=release, stac=False)
+
+
 def city_records(bbox, release):
     """Stream every Overture place inside the bbox, with its point geometry."""
-    reader = core.record_batch_reader("place", bbox=bbox, release=release, stac=True)
+    reader = open_reader(bbox, release)
     if reader is None:
         return
     for batch in reader:
@@ -168,7 +208,7 @@ def main():
     parser.add_argument("--list-categories", metavar="CITY")
     args = parser.parse_args()
 
-    release = args.release or core.get_latest_release()
+    release = args.release or latest_release()
     print(f"Overture release {release}")
 
     if args.list_categories:

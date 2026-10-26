@@ -23,7 +23,7 @@ import time
 from datetime import datetime, timezone
 
 from overture_places_import import (
-    best_rows, bbox_from_centre, city_records, keep, to_row,
+    best_rows, bbox_from_centre, city_records, keep, latest_release, to_row,
 )
 from overturemaps import core
 
@@ -154,7 +154,7 @@ def main():
     parser.add_argument("--force", action="store_true", help="rebuild cities already on this release")
     args = parser.parse_args()
 
-    release = args.release or core.get_latest_release()
+    release = args.release or latest_release()
     cities = list(read_cities(args.cities))
     r2 = R2() if args.upload else None
     print(f"Overture release {release} · {len(cities):,} cities · shard {args.shard + 1}/{args.shards}")
