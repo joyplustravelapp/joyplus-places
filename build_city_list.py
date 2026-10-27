@@ -29,12 +29,12 @@ NAME, ASCII, LAT, LON, FCODE, COUNTRY, POP = 1, 2, 4, 5, 7, 8, 14
 def radius_km(population):
     """Bigger cities need a bigger area to cover their sights."""
     if population >= 5_000_000:
-        return 12
+        return 15
     if population >= 1_000_000:
-        return 8
+        return 10
     if population >= 300_000:
-        return 6
-    return 4
+        return 8
+    return 5
 
 
 def slugify(text):

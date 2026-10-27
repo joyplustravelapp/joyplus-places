@@ -25,6 +25,7 @@ USER_AGENT = "JoyPlusPlacesBot/1.0 (https://joyplusapp.com; benjamin@joyplusapp.
 FAMOUS_TOP = 25       # this many per city are marked famous
 MIN_SITELINKS = 5     # ignore places with fewer Wikipedia articles than this
 MAX_RESULTS = 200
+FAME_RADIUS_FACTOR = 1.5  # Belém is 6.4 km from Lisbon's centre; landmarks cluster on city edges
 
 # Wikidata classes worth visiting, with the category name used in the city file.
 # Anything that is an instance of a subclass of these counts too.
@@ -150,7 +151,8 @@ def fetch_famous(lat, lon, radius_km, country, attempts=3):
     """
     for attempt in range(attempts):
         query = QUERY % {
-            "lat": lat, "lon": lon, "radius": round(max(2.0, radius_km / (2 ** attempt)), 1),
+            "lat": lat, "lon": lon,
+            "radius": round(max(2.0, min(30.0, radius_km * FAME_RADIUS_FACTOR) / (2 ** attempt)), 1),
             "min_links": MIN_SITELINKS, "roots": " ".join(f"wd:{q}" for q in ROOT_CLASSES),
             "lang": COUNTRY_LANGUAGE.get(country.upper(), "en"), "limit": MAX_RESULTS,
         }
