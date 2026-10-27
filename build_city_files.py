@@ -23,12 +23,14 @@ import time
 from datetime import datetime, timezone
 
 from overture_places_import import (
-    FILTER_VERSION, best_rows, bbox_from_centre, city_records, keep, latest_release, to_row,
+    FILTER_VERSION, best_rows, bbox_from_centre, category_group, city_records, keep,
+    latest_release, to_row,
 )
 from overturemaps import core
 from wikidata_famous import enrich, fetch_famous
 
 ATTRIBUTION = "© Overture Maps Foundation and contributors"
+FOOD_INDEX_MAX = 4000  # restaurants, cafés, bars and markets kept for matching AI meal picks
 
 
 def read_cities(path):
@@ -47,7 +49,12 @@ def read_cities(path):
 
 
 def city_places(city, release, args):
-    """The city's best travel places, retried if the network hiccups."""
+    """(best travel places, full food list), retried if the network hiccups.
+
+    The food list keeps every named, open, non-chain food and drink place (up to
+    FOOD_INDEX_MAX, most confident first) so restaurants the AI names can be found
+    with their real coordinates.
+    """
     for attempt in range(3):
         try:
             rows = [
@@ -55,7 +62,10 @@ def city_places(city, release, args):
                 for record, point in city_records(city["bbox"], release)
                 if keep(record, args.min_confidence)
             ]
-            return best_rows(rows, args.max_per_category, args.max_per_city)
+            rows = [r for r in rows if r["name"]]  # named only in the wrong script, no usable name
+            food = sorted((r for r in rows if category_group(r["basic_category"]) == "food"),
+                          key=lambda r: r["confidence"] or 0, reverse=True)[:FOOD_INDEX_MAX]
+            return best_rows(rows, args.max_per_category, args.max_per_city), food
         except Exception as error:  # network or read error: wait, then retry
             if attempt == 2:
                 raise
@@ -132,6 +142,25 @@ def write_local(path, document):
         json.dump(document, f, ensure_ascii=False, separators=(",", ":"))
 
 
+def food_document(city, food, release):
+    """Compact list of the city's food and drink places, for matching AI meal picks."""
+    return {
+        "slug": city["slug"],
+        "city": city["city"],
+        "country": city["country"],
+        "release": release,
+        "filter_version": FILTER_VERSION,
+        "attribution": ATTRIBUTION,
+        "count": len(food),
+        "places": [
+            {"id": p["overture_id"], "name": p["name"], "cat": p["basic_category"],
+             "lat": p["lat"], "lon": p["lon"],
+             "conf": round(p["confidence"], 3) if p["confidence"] is not None else None}
+            for p in food
+        ],
+    }
+
+
 def index_document(cities, release):
     return {
         "release": release,
@@ -182,7 +211,7 @@ def main():
             skipped += 1
             continue
         try:
-            places = city_places(city, release, args)
+            places, food = city_places(city, release, args)
         except Exception as error:
             failed.append(city["slug"])
             print(f"{city['slug']}: FAILED ({error})")
@@ -198,11 +227,15 @@ def main():
             document["famous_source"] = "Wikidata"
             fame_note = f" · {len(famous)} famous ({matched} matched, {added} added)"
             time.sleep(1)  # be gentle with Wikidata's free service
+        food_doc = food_document(city, food, release)
+        write_local(os.path.join(args.out_dir, f"{city['slug']}-food.json"), food_doc)
         write_local(os.path.join(args.out_dir, f"{city['slug']}.json"), document)
         if r2:
+            # Food file first: the main file's version is what marks a city as done.
+            r2.put_json(f"places/{city['slug']}-food.json", food_doc, release)
             r2.put_json(key, document, release)
         done += 1
-        print(f"{city['slug']}: {len(places):,} places{fame_note}")
+        print(f"{city['slug']}: {len(places):,} places · {len(food):,} food{fame_note}")
 
     print(f"Done: {done} built, {skipped} already up to date, {len(failed)} failed")
     if failed:

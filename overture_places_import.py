@@ -38,7 +38,7 @@ _opener.addheaders = [("User-Agent", "Mozilla/5.0 (compatible; joyplus-places/1.
 urllib.request.install_opener(_opener)
 
 # Bump when the filter changes, so files built with an older filter are rebuilt.
-FILTER_VERSION = "5"
+FILTER_VERSION = "7"
 
 # Set to False if the catalog is unreachable; reads then go straight to storage.
 USE_STAC = True
@@ -102,6 +102,39 @@ def is_travel_place(basic_category):
     return category_group(basic_category) is not None
 
 
+# Countries whose places are normally named in Latin script. A place there named only in
+# another script (a Russian label for a Lisbon convent) is a data error: use another name.
+NON_LATIN_COUNTRIES = {
+    "RU", "UA", "BY", "BG", "RS", "MK", "KZ", "KG", "MN", "GR", "CY", "IL", "EG", "MA", "DZ",
+    "TN", "LY", "JO", "LB", "SY", "IQ", "IR", "SA", "AE", "QA", "KW", "BH", "OM", "YE", "AF",
+    "PK", "IN", "NP", "BD", "LK", "MM", "TH", "LA", "KH", "CN", "TW", "HK", "MO", "JP", "KR",
+    "KP", "GE", "AM", "ET", "ER",
+}
+
+
+def has_latin(text):
+    return any("a" <= ch.lower() <= "z" or "\u00c0" <= ch <= "\u024f" for ch in text or "")
+
+
+def common_names(names):
+    """Overture's names.common as a dict, whether it arrives as a dict or a list of pairs."""
+    common = (names or {}).get("common") or {}
+    return dict(common) if not isinstance(common, dict) else common
+
+
+def display_name(record, country):
+    """The place's name, or None if it only has a name in the wrong script for its country."""
+    names = record.get("names") or {}
+    primary = names.get("primary")
+    if not primary or country.upper() in NON_LATIN_COUNTRIES or has_latin(primary):
+        return primary
+    common = common_names(names)
+    for lang in ("en", "pt", "es", "fr", "it", "de", "nl", "id", "ms", "vi", "tr", "pl"):
+        if has_latin(common.get(lang)):
+            return common[lang]
+    return next((n for n in common.values() if has_latin(n)), None)
+
+
 CSV_COLUMNS = [
     "overture_id", "name", "basic_category", "city", "country", "address", "website",
     "phone", "lat", "lon", "confidence", "operating_status", "sources", "licenses", "release",
@@ -120,12 +153,11 @@ def first(items):
 
 def to_row(record, point, city, country, release):
     """Turn one Overture record into one CSV row."""
-    names = record.get("names") or {}
     address = first(record.get("addresses")) or {}
     sources = record.get("sources") or []
     return {
         "overture_id": record.get("id"),
-        "name": names.get("primary"),
+        "name": display_name(record, country),
         "basic_category": record.get("basic_category"),
         "city": city,
         "country": address.get("country") or country,
