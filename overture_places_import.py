@@ -25,6 +25,9 @@ import os
 import sys
 from collections import Counter, defaultdict
 
+import io
+import time
+import urllib.error
 import urllib.request
 
 import pyarrow.fs as pafs
@@ -39,6 +42,32 @@ urllib.request.install_opener(_opener)
 
 # Bump when the filter changes, so files built with an older filter are rebuilt.
 FILTER_VERSION = "7"
+
+# The Overture tool downloads its catalog file again for every city, which gets
+# rate-limited ("429 Too Many Requests") on big runs. Keep one copy per job, and
+# wait and retry politely if the server still asks us to slow down.
+_CATALOG_CACHE = {}
+_real_urlopen = core.urlopen
+
+
+def _catalog_urlopen(url, *args, **kwargs):
+    key = url if isinstance(url, str) else url.full_url
+    if "stac.overturemaps.org" not in key:
+        return _real_urlopen(url, *args, **kwargs)
+    if key not in _CATALOG_CACHE:
+        for attempt in range(6):
+            try:
+                with _real_urlopen(url, *args, **kwargs) as response:
+                    _CATALOG_CACHE[key] = response.read()
+                break
+            except urllib.error.HTTPError as error:
+                if error.code != 429 or attempt == 5:
+                    raise
+                time.sleep(5 * 2 ** attempt)
+    return io.BytesIO(_CATALOG_CACHE[key])
+
+
+core.urlopen = _catalog_urlopen
 
 # Set to False if the catalog is unreachable; reads then go straight to storage.
 USE_STAC = True

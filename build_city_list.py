@@ -7,6 +7,10 @@ cities.csv with the largest N cities, each with a centre and a radius.
 Run:  python build_city_list.py --top 1000
       python build_city_list.py --top 300 --countries PT,ES,FR,TH,VN,ID,JP,BR
       python build_city_list.py --top 1000 --keep cities_extra.csv   (always include your own rows)
+      python build_city_list.py --top 10000 --keep cities.csv --keep-url https://.../guide-cities.csv
+
+Priority when the same city appears twice: your own --keep file, then --keep-url lists
+(your destination guides), then GeoNames.
 
 GeoNames data is CC BY 4.0: credit "GeoNames" on the attribution page.
 """
@@ -80,30 +84,72 @@ def build(rows, top, countries=None):
     return out
 
 
+FIELDS = ["slug", "city", "country", "lat", "lon", "radius_km", "population"]
+
+
+def valid_rows(rows, source):
+    """Rows with a slug, a name and usable coordinates; anything else is skipped and reported."""
+    good = []
+    for row in rows:
+        try:
+            lat, lon, radius = float(row["lat"]), float(row["lon"]), float(row["radius_km"])
+            if row["slug"].strip() and row["city"].strip() and -90 <= lat <= 90 and -180 <= lon <= 180 and radius > 0:
+                good.append({**row, "slug": row["slug"].strip()})
+                continue
+        except (KeyError, ValueError, AttributeError):
+            pass
+        print(f"  skipped a row from {source}: {row}")
+    return good
+
+
+def rows_from_url(url):
+    """A city list published online (e.g. your guides). Never fails the run if it's unreachable."""
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": "JoyPlusPlacesBot/1.0 (https://joyplusapp.com)"})
+        with urllib.request.urlopen(request, timeout=60) as response:
+            text = response.read().decode("utf-8-sig")
+        rows = valid_rows(csv.DictReader(io.StringIO(text)), url)
+        print(f"{len(rows):,} cities from {url}")
+        return rows
+    except Exception as error:
+        print(f"Could not read {url} ({error}); continuing without it")
+        return []
+
+
 def main():
     parser = argparse.ArgumentParser(description="Build cities.csv from GeoNames.")
     parser.add_argument("--top", type=int, default=1000)
     parser.add_argument("--countries", help="comma-separated ISO codes, e.g. PT,ES,TH")
-    parser.add_argument("--keep", help="CSV of extra cities to always include (same columns)")
+    parser.add_argument("--keep", help="CSV of your own cities, always included and never overridden")
+    parser.add_argument("--keep-url", action="append", default=[], help="CSV published online, e.g. your guides")
     parser.add_argument("--out", default="cities.csv")
     args = parser.parse_args()
 
     countries = set(args.countries.upper().split(",")) if args.countries else None
-    cities = build(load_geonames(), args.top, countries)
+    merged = {}
 
+    def add(rows, override, keep_larger_radius=False):
+        for row in rows:
+            current = merged.get(row["slug"])
+            if current is None or override:
+                if current is not None and keep_larger_radius:
+                    # Guide centre wins, but a big city keeps its full area (Tokyo 15 km, not 8).
+                    row = {**row, "radius_km": max(float(row["radius_km"]), float(current["radius_km"]))}
+                merged[row["slug"]] = row
+
+    add(build(load_geonames(), args.top, countries), override=False)
+    print(f"{len(merged):,} cities from GeoNames")
+    for url in args.keep_url:
+        add(rows_from_url(url), override=True, keep_larger_radius=True)
     if args.keep:
-        known = {c["slug"] for c in cities}
         with open(args.keep, newline="", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                if row["slug"] not in known:
-                    cities.append(row)
+            add(valid_rows(csv.DictReader(f), args.keep), override=True)
 
-    fields = ["slug", "city", "country", "lat", "lon", "radius_km", "population"]
     with open(args.out, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+        writer = csv.DictWriter(f, fieldnames=FIELDS, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(cities)
-    print(f"Wrote {len(cities):,} cities to {args.out}")
+        writer.writerows(merged.values())
+    print(f"Wrote {len(merged):,} cities to {args.out}")
 
 
 if __name__ == "__main__":
