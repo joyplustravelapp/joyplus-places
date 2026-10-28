@@ -7,10 +7,12 @@ on:
     inputs:
       top_cities:
         description: "How many of the world's largest cities to include"
-        default: "1000"
+        default: "10000"
 
 env:
-  TOP_CITIES: ${{ github.event.inputs.top_cities || '1000' }}
+  TOP_CITIES: ${{ github.event.inputs.top_cities || '10000' }}
+  # Your destination guides, published by the website: every guide always gets its places
+  GUIDE_CITIES_URL: https://joyplusapp.com/data/guide-cities.csv
 
 jobs:
   citylist:
@@ -21,7 +23,7 @@ jobs:
         with:
           python-version: "3.12"
       # The largest cities from GeoNames, plus every row you keep in cities.csv
-      - run: python build_city_list.py --top "$TOP_CITIES" --keep cities.csv --out cities_all.csv
+      - run: python build_city_list.py --top "$TOP_CITIES" --keep cities.csv --keep-url "$GUIDE_CITIES_URL" --out cities_all.csv
       - uses: actions/upload-artifact@v4
         with:
           name: cities
@@ -30,11 +32,11 @@ jobs:
   cities:
     needs: citylist
     runs-on: ubuntu-latest
-    timeout-minutes: 340
+    timeout-minutes: 350
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -44,7 +46,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install overturemaps boto3
-      - run: python build_city_files.py --cities cities_all.csv --shard ${{ matrix.shard }} --shards 10 --upload
+      - run: python build_city_files.py --cities cities_all.csv --shard ${{ matrix.shard }} --shards 20 --upload
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
