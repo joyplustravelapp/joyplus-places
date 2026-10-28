@@ -26,7 +26,9 @@ import sys
 from collections import Counter, defaultdict
 
 import io
+import re
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 
@@ -41,7 +43,7 @@ _opener.addheaders = [("User-Agent", "Mozilla/5.0 (compatible; joyplus-places/1.
 urllib.request.install_opener(_opener)
 
 # Bump when the filter changes, so files built with an older filter are rebuilt.
-FILTER_VERSION = "7"
+FILTER_VERSION = "8"
 
 # The Overture tool downloads its catalog file again for every city, which gets
 # rate-limited ("429 Too Many Requests") on big runs. Keep one copy per job, and
@@ -208,9 +210,45 @@ CHAIN_NAMES = (
     "starbucks", "mcdonald", "burger king", "kfc", "subway", "domino", "pizza hut",
     "costa coffee", "dunkin", "tim hortons", "7-eleven", "7 eleven", "carrefour", "lidl",
     "aldi", "pingo doce", "continente", "spar", "five guys", "taco bell", "telepizza",
-    "papa john", "krispy kreme", "pret a manger", "paul ", "hard rock cafe", "tgi friday",
+    "papa john", "krispy kreme", "pret a manger", "hard rock cafe", "tgi friday",
     "zara", "primark", "decathlon", "ikea", "family mart", "familymart", "lawson",
+    # Japan, in the script places are usually named in (convenience stores, fast food, family restaurants)
+    "セブン-イレブン", "セブンイレブン", "ファミリーマート", "ローソン", "ミニストップ",
+    "デイリーヤマザキ", "ニューデイズ", "マクドナルド", "スターバックス", "ドトール",
+    "タリーズ", "ケンタッキー", "モスバーガー", "吉野家", "すき家", "松屋", "なか卯",
+    "ロイヤルホスト", "丸亀製麺", "ガスト", "サイゼリヤ", "ジョナサン", "コメダ珈琲",
+    "日高屋", "coco壱番屋", "royal host", "marugame", "yoshinoya", "sukiya", "matsuya",
+    "mos burger", "doutor", "tully's", "komeda", "saizeriya", "gusto", "ministop", "daily yamazaki",
 )
+
+
+def _clean_name(name):
+    return unicodedata.normalize("NFKC", name or "").lower().replace("’", "'").strip()
+
+
+_CJK = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
+
+
+def chain_key(name):
+    """The brand part of a place name: "セブン-イレブン 武蔵野店" -> "セブン-イレブン", "McDonald's - Rossio" -> "mcdonald's"."""
+    clean = _clean_name(name)
+    if _CJK.search(clean):
+        clean = re.split(r"[\s　]", clean, maxsplit=1)[0]
+    clean = re.split(r"\s[-–—|/(]\s?|\s\(", clean, maxsplit=1)[0]
+    return clean.strip(" -–—,.")
+
+
+_CJK_BRANDS = tuple(b for b in CHAIN_NAMES if _CJK.search(b) and len(b) >= 4)
+
+CITY_CHAIN_MIN_BRANCHES = 5
+
+
+def drop_city_chains(rows):
+    """Food and drink names with many branches in this city are chains, in any language."""
+    counts = Counter(chain_key(r["name"]) for r in rows if category_group(r["basic_category"]) == "food")
+    chains = {key for key, n in counts.items() if key and n >= CITY_CHAIN_MIN_BRANCHES}
+    kept = [r for r in rows if category_group(r["basic_category"]) != "food" or chain_key(r["name"]) not in chains]
+    return kept, len(rows) - len(kept)
 
 
 def is_chain(record):
@@ -218,8 +256,12 @@ def is_chain(record):
     brand = record.get("brand") or {}
     if (brand.get("names") or {}).get("primary") or brand.get("wikidata"):
         return True
-    name = ((record.get("names") or {}).get("primary") or "").lower().replace("’", "'")
-    return name.startswith(CHAIN_NAMES)
+    names = record.get("names") or {}
+    candidates = [names.get("primary") or ""] + list((names.get("common") or {}).values())
+    cleaned = [_clean_name(n) for n in candidates if isinstance(n, str)]
+    # Distinctive Japanese brand names (4+ characters) also count inside a longer name
+    # ("プレミアムロイヤルホスト"); short ones like 松屋 only at the start (松屋銀座 is a store).
+    return any(n.startswith(CHAIN_NAMES) or any(b in n for b in _CJK_BRANDS) for n in cleaned)
 
 
 def keep(record, min_confidence, min_confidence_sights=0.3):

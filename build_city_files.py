@@ -23,7 +23,7 @@ import time
 from datetime import datetime, timezone
 
 from overture_places_import import (
-    FILTER_VERSION, best_rows, bbox_from_centre, category_group, city_records, keep,
+    FILTER_VERSION, best_rows, bbox_from_centre, category_group, city_records, drop_city_chains, keep,
     latest_release, to_row,
 )
 from overturemaps import core
@@ -63,6 +63,7 @@ def city_places(city, release, args):
                 if keep(record, args.min_confidence)
             ]
             rows = [r for r in rows if r["name"]]  # named only in the wrong script, no usable name
+            rows, _ = drop_city_chains(rows)  # many branches in this city = a chain, in any script
             food = sorted((r for r in rows if category_group(r["basic_category"]) == "food"),
                           key=lambda r: r["confidence"] or 0, reverse=True)[:FOOD_INDEX_MAX]
             return best_rows(rows, args.max_per_category, args.max_per_city), food
